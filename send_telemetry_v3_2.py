@@ -1,4 +1,4 @@
-import requests 
+import requests
 import time
 import Telemetry_pb2_grpc, Telemetry_pb2
 
@@ -12,15 +12,17 @@ import os
 import asyncio
 import linecache
 from collections import deque
+import sys
 
-    
+
 def get_line(filename, n):
     with open(filename, 'r') as f:
         suma = sum(1 for line in f)
-        f.seek(0,0)
+        f.seek(0, 0)
         for index_number, line in enumerate(f):
             if index_number + 1 == n:
                 return line
+
 
 class ANRAOAuthClient:
     base_auth_endpoint = f'https://oauth.flyanra.net'
@@ -49,14 +51,16 @@ class ANRAOAuthClient:
             print(response.status_code)
             return None
 
-class GrpcClient:            
+
+class GrpcClient:
 
     # source_telemetry_file = 'ANRA_telemetry_source.txt'
     # telemetry_file = 'ANRA_telemetry.txt'  # Telemetry data for onward transmission
 
-    def __init__(self):        
+    def __init__(self, telemetry_source):
         print('GrpcClient init')
-    
+        self.telemetry_source_file = telemetry_source
+        # print(f"(init)Telemetry file is: {self.telemetry_source_file}")
         print("Getting Token from oauth")
         client_id = 'DMS'
         oauth_client = ANRAOAuthClient(client_id)
@@ -64,8 +68,8 @@ class GrpcClient:
         print(access_token)
         self.oauth_token = access_token
 
-        self.server_dns = 'utm-delivery-grpc-telem.smartskies.io' #remote ip
-        self.port = '1605' #remote port
+        self.server_dns = 'utm-delivery-grpc-telem.smartskies.io'  # remote ip
+        self.port = '1605'  # remote port
 
         start_time = time.time()
 
@@ -77,35 +81,42 @@ class GrpcClient:
     def __next__(self):
         print(f"Start the next telemetry")
         newIncomingLineCount = 0
-
-        source_file = "ANRA_telemetry_source.txt"
+        poll_count = 0
+        # source_file = "ANRA_telemetry_source.txt"
+        source_file = self.telemetry_source_file
+        # print(f"(next)Telemetry file is: {source_file}")
         with open(source_file, 'r', newline='') as f:
             totalRows = sum(1 for line in f)
             while True:
-                if totalRows >= self.currentIndex or newIncomingLineCount > 0:   
+                if totalRows >= self.currentIndex or newIncomingLineCount > 0:
                     if newIncomingLineCount > 0:
-                        print(f"Line total: {totalRows + newIncomingLineCount}, current row: {self.currentIndex}, new line count: {newIncomingLineCount}")
+                        print(
+                            f"Line total: {totalRows + newIncomingLineCount}, current row: {self.currentIndex}, new line count: {newIncomingLineCount}")
                         newIncomingLineCount = 0
                     else:
-                        print(f"Line total: {totalRows}, current row: {self.currentIndex}, new line count: {newIncomingLineCount}")    
+                        print(
+                            f"Line total: {totalRows}, current row: {self.currentIndex}, new line count: {newIncomingLineCount}")
                     result = get_line(source_file, self.currentIndex)
-                    self.currentIndex = self.currentIndex + 1  
+                    self.currentIndex = self.currentIndex + 1
                     if result:
                         print(f"Start set telemetry : {result}")
                         self.set_telemetry(result.split(','))
                         # time.sleep(1)
                         return self.pack_telemetry()
                     else:
-                        print(f"Skip empty row : {result}")                        
+                        print(f"Skip empty row : {result}")
                 else:
                     time.sleep(3)
                     newIncomingLineCount = sum(1 for line in f)
-                    if newIncomingLineCount > 0: 
+                    if newIncomingLineCount > 0:
                         continue
-                    print(f'Polling file. Row changes count = {newIncomingLineCount}')   
+                    print(f'Polling file. Row changes count = {newIncomingLineCount}')
+                    poll_count += 1
+                    if poll_count > 10:
+                        break
 
     def set_telemetry(self, row):
-        point_tuple =('Point', float(row[5]), float(row[6][:-1]))
+        point_tuple = ('Point', float(row[5]), float(row[6][:-1]))
         line_data = {
             "operation_id": row[0],
             "enroute_positions_id": row[1],
@@ -148,7 +159,7 @@ class GrpcClient:
         telemetry.mode = 'MODE_AUTO'
         telemetry.altitude_ft_wgs84 = self.aircraft["altitude_ft_wgs84"]
         telemetry.altitude_num_gps_satellites = self.aircraft["altitude_num_gps_satellites"]
-        telemetry.hdop_gps =self.aircraft["hdop_gps"]
+        telemetry.hdop_gps = self.aircraft["hdop_gps"]
         telemetry.track_bearing_deg = self.aircraft["track_bearing_deg"]
         telemetry.track_bearing_reference = Telemetry_pb2.Telemetry.MAGNETIC_NORTH
         telemetry.vdop_gps = self.aircraft["vdop_gps"]
@@ -157,13 +168,14 @@ class GrpcClient:
         telemetry.pitch = self.aircraft["pitch"]
         telemetry.climbrate = self.aircraft["climbrate"]
         telemetry.heading = self.aircraft["heading"]
-        print (f'Telemetry lat lng is {telemetry.location.lat} {telemetry.location.lng} and heading is {telemetry.heading}')
+        print(
+            f'Telemetry lat lng is {telemetry.location.lat} {telemetry.location.lng} and heading is {telemetry.heading}')
         return telemetry
 
     def get_grpc_stream(self):
         print("get_grpc_stream is called")
         try:
-            msg_channel = ''.join([self.server_dns,':',self.port])
+            msg_channel = ''.join([self.server_dns, ':', self.port])
             channel = grpc.insecure_channel(msg_channel)
             self.stub = Telemetry_pb2_grpc.TelemetryModuleStub(channel)
 
@@ -187,9 +199,18 @@ class GrpcClient:
         print("Self Closed")
         self.channel.close()
 
-async def main():
-    g = GrpcClient()
+# async def main(args):
+def main(args):
+    if len(args) != 1:
+        sys.exit("Wrong number of arguments - Please provide name of source file")
+    thefile = args[0]
+    print(f"Creating client")
+    g = GrpcClient(thefile)
     g.get_grpc_stream()
     print(f"Telemetry data transmission complete")
-    
-asyncio.run(main())
+
+
+# asyncio.run(main(sys.argv[1:]))
+# Module requires the name of the telemetry source file to be provided as an argument
+if __name__ == "__main__":
+    main(sys.argv[1:])
