@@ -39,4 +39,6 @@ async def main():
     await asyncio.gather(task0)
     print(f"SHEPHERD data transmission complete")
 
+# If using this the name of the SHEPHERD source file and the destination file ned to be provided as arguments
+
 asyncio.run(main())
